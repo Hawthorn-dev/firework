@@ -1,228 +1,229 @@
 "use client";
 
-import { useRef, useMemo, useEffect } from "react";
+import { useRef, useMemo, useEffect, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { PositionalAudio } from "@react-three/drei";
 import * as THREE from "three";
 import { createExplosionBuffer } from "../utils/audio";
+import { createGlowTexture } from "../utils/texture";
 
 interface FireworkProps {
   position: [number, number, number];
   color: string;
   type: string;
   onComplete: () => void;
+  listener: THREE.AudioListener;
 }
 
-interface Particle {
+// Particle system for explosion
+class Particle {
   position: THREE.Vector3;
   velocity: THREE.Vector3;
   color: THREE.Color;
-  active: boolean;
+  alpha: number;
+  life: number;
+  maxLife: number;
   scale: number;
-  generation: number;
+  shouldFlicker: boolean;
+
+  constructor(pos: THREE.Vector3, vel: THREE.Vector3, color: THREE.Color) {
+    this.position = pos.clone();
+    this.velocity = vel.clone();
+    this.color = color.clone();
+    this.alpha = 1.0;
+    this.life = 0;
+    this.maxLife = 1.0 + Math.random() * 0.5;
+    this.scale = 1.0;
+    this.shouldFlicker = Math.random() > 0.5;
+  }
+
+  update(delta: number, gravity: number, drag: number) {
+    this.life += delta;
+
+    // Physics
+    this.velocity.y -= gravity * delta;
+    this.velocity.multiplyScalar(Math.pow(drag, delta * 60));
+    this.position.addScaledVector(this.velocity, delta);
+
+    // Fade out
+    this.alpha = 1.0 - (this.life / this.maxLife);
+  }
 }
 
-interface FireworkConfig {
-  count: number;
-  gravity: number;
-  drag: number;
-  lifeSpan: number;
-  split: boolean;
-  parentCount?: number;
+// Rocket for launch phase
+class Rocket {
+  position: THREE.Vector3;
+  velocity: THREE.Vector3;
+  targetHeight: number;
+  color: THREE.Color;
+  trail: THREE.Vector3[];
+
+  constructor(startPos: THREE.Vector3, height: number, color: THREE.Color) {
+    this.position = new THREE.Vector3(startPos.x, 0, startPos.z);
+    this.targetHeight = startPos.y; // The passed position is target
+    this.velocity = new THREE.Vector3(0, Math.sqrt(2 * 15 * this.targetHeight), 0); // v^2 = u^2 + 2as, approx
+    this.color = color;
+    this.trail = [];
+  }
+
+  update(delta: number) {
+    this.position.addScaledVector(this.velocity, delta);
+    this.velocity.y -= 5 * delta; // Less gravity during launch for effect
+
+    // Trail history
+    this.trail.push(this.position.clone());
+    if (this.trail.length > 20) this.trail.shift();
+  }
 }
 
-export default function Firework({ position, color, type, onComplete }: FireworkProps) {
-  const meshRef = useRef<THREE.InstancedMesh>(null);
+export default function Firework({ position, color, type, onComplete, listener }: FireworkProps) {
+  const pointsRef = useRef<THREE.Points>(null!);
   const audioRef = useRef<THREE.PositionalAudio>(null!);
-  const { camera } = useThree();
+  const launchAudioRef = useRef<THREE.PositionalAudio>(null!);
 
-  // Configuration based on type
-  const config = useMemo<FireworkConfig>(() => {
-    switch (type) {
-      case "willow":
-        // Willow: Falls down (gravity), slows down horizontally (low drag), long life
-        return { count: 400, gravity: 3, drag: 0.92, lifeSpan: 3.0, split: false };
-      case "crossette":
-        // Crossette: Splits mid-air
-        return { count: 1000, gravity: 9.8, drag: 0.96, lifeSpan: 1.5, split: true, parentCount: 200 };
-      case "peony":
-      case "classic":
-      default:
-        // Peony: Standard spherical explosion
-        return { count: 600, gravity: 9.8, drag: 0.96, lifeSpan: 1.2, split: false };
-    }
-  }, [type]);
+  const [phase, setPhase] = useState<'LAUNCH' | 'EXPLODE'>('LAUNCH');
+  const [texture, setTexture] = useState<THREE.Texture | null>(null);
 
-  const lifeRef = useRef(config.lifeSpan);
-  const particlesRef = useRef<Particle[]>([]);
-  const hasSplitRef = useRef(false);
+  // Initialize objects
+  const rocket = useMemo(() => new Rocket(new THREE.Vector3(...position), position[1], new THREE.Color(color)), [position, color]);
+  const particles = useRef<Particle[]>([]);
 
-  // Initialize particles
+  // Geometry for points
+  const geometry = useMemo(() => new THREE.BufferGeometry(), []);
+
+  // Load texture once
   useEffect(() => {
-    const data: Particle[] = [];
-    const baseColor = new THREE.Color(color);
+    setTexture(createGlowTexture());
+  }, []);
 
-    // Determine effective count to spawn initially
-    const initialCount = config.split ? config.parentCount! : config.count;
-
-    for (let i = 0; i < config.count; i++) {
-      const isParent = i < initialCount;
-
-      // Initial burst logic
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos((Math.random() * 2) - 1);
-      const speed = Math.random() * 10 + 5;
-
-      const x = speed * Math.sin(phi) * Math.cos(theta);
-      const y = speed * Math.sin(phi) * Math.sin(theta);
-      const z = speed * Math.cos(phi);
-
-      data.push({
-        position: new THREE.Vector3(0, 0, 0),
-        velocity: new THREE.Vector3(x, y, z),
-        color: baseColor.clone().offsetHSL(0, 0, (Math.random() - 0.5) * 0.2),
-        active: isParent,
-        scale: 1.0,
-        generation: 0,
-      });
-    }
-    particlesRef.current = data;
-    lifeRef.current = config.lifeSpan;
-    hasSplitRef.current = false;
-  }, [color, type, config]);
-
-  // Audio effect
+  // Launch sound
   useEffect(() => {
-    if (!audioRef.current) return;
-
-    // Create buffer
-    const context = audioRef.current.context;
-    const buffer = createExplosionBuffer(context);
-    audioRef.current.setBuffer(buffer);
-    audioRef.current.setRefDistance(20);
-    audioRef.current.setRolloffFactor(1);
-
-    // Calculate delay
-    const fireworkPos = new THREE.Vector3(...position);
-    const dist = camera.position.distanceTo(fireworkPos);
-    const speedOfSound = 343; // m/s
-    const delayMs = (dist / speedOfSound) * 1000;
-
-    // Play sound with delay
-    const timer = setTimeout(() => {
-        if (audioRef.current && !audioRef.current.isPlaying) {
-             if (context.state === 'suspended') context.resume();
-             // Randomize pitch slightly for variety
-             audioRef.current.setDetune((Math.random() - 0.5) * 600);
-             audioRef.current.play();
-        }
-    }, delayMs);
-
-    return () => clearTimeout(timer);
-  }, [camera, position, type]); // Run when these change (basically on mount)
-
-  const dummy = useMemo(() => new THREE.Object3D(), []);
-  const tempColor = useMemo(() => new THREE.Color(), []);
-
-  useFrame((state, delta) => {
-    if (!meshRef.current || particlesRef.current.length === 0) return;
-
-    lifeRef.current -= delta;
-    const lifeRatio = lifeRef.current / config.lifeSpan;
-
-    if (lifeRef.current <= 0) {
-      onComplete();
-      return;
+    if (launchAudioRef.current && phase === 'LAUNCH') {
+      const buffer = createExplosionBuffer(launchAudioRef.current.context); // Reuse buffer for now
+      launchAudioRef.current.setBuffer(buffer);
+      launchAudioRef.current.setRefDistance(20);
+      launchAudioRef.current.setPlaybackRate(2.0); // Higher pitch for whistle
+      launchAudioRef.current.setVolume(0.5);
+      if (launchAudioRef.current.context.state === 'running') {
+        launchAudioRef.current.play();
+      }
     }
+  }, [phase]);
 
-    // Crossette split logic
-    if (config.split && !hasSplitRef.current && lifeRatio < 0.6) {
-      hasSplitRef.current = true;
-      const parentCount = config.parentCount!;
+  // Explosion Logic
+  const explode = () => {
+    setPhase('EXPLODE');
 
-      let childIndex = parentCount;
-      // We iterate through parents to split them
-      for (let i = 0; i < parentCount; i++) {
-        const parent = particlesRef.current[i];
-        if (!parent.active) continue;
-
-        // Each parent splits into 4 children (replacing itself + 3 new, or just 4 new)
-        // Here we deactivate parent and activate 4 children to simulate full break
-        parent.active = false;
-
-        for (let j = 0; j < 4; j++) {
-           if (childIndex >= config.count) break;
-           const child = particlesRef.current[childIndex];
-           child.active = true;
-           child.position.copy(parent.position);
-           child.generation = 1;
-
-           // Inherit velocity but add spread
-           child.velocity.copy(parent.velocity).multiplyScalar(0.6);
-
-           // Add cross/random burst
-           // Crossette usually bursts in a + shape relative to trajectory
-           // Simplifying to random burst
-           const theta = Math.random() * Math.PI * 2;
-           const phi = Math.random() * Math.PI;
-           const burstSpeed = 8;
-
-           child.velocity.x += burstSpeed * Math.sin(phi) * Math.cos(theta);
-           child.velocity.y += burstSpeed * Math.sin(phi) * Math.sin(theta);
-           child.velocity.z += burstSpeed * Math.cos(phi);
-
-           childIndex++;
-        }
+    // Play explosion sound
+    if (audioRef.current) {
+      const buffer = createExplosionBuffer(audioRef.current.context);
+      audioRef.current.setBuffer(buffer);
+      audioRef.current.setRefDistance(20);
+      audioRef.current.setPlaybackRate(0.8 + Math.random() * 0.4);
+      if (audioRef.current.context.state === 'running') {
+        audioRef.current.play();
       }
     }
 
-    // Physics Update
-    const dragFactor = Math.pow(config.drag, delta * 60);
+    // Generate particles based on type
+    const count = type === 'crossette' ? 100 : 300;
+    const baseColor = new THREE.Color(color);
 
-    particlesRef.current.forEach((particle, i) => {
-      if (!particle.active) {
-        // Hide inactive particles
-        meshRef.current!.setMatrixAt(i, new THREE.Matrix4().makeScale(0, 0, 0));
+    for (let i = 0; i < count; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos((Math.random() * 2) - 1);
+      const speed = Math.random() * 15 + 10; // Faster burst
+
+      const velocity = new THREE.Vector3(
+        speed * Math.sin(phi) * Math.cos(theta),
+        speed * Math.sin(phi) * Math.sin(theta),
+        speed * Math.cos(phi)
+      );
+
+      // Add parent velocity
+      velocity.add(rocket.velocity.clone().multiplyScalar(0.2));
+
+      const particleColor = baseColor.clone();
+      if (type === 'willow') particleColor.setHSL(0.1, 1, 0.5); // Gold
+
+      particles.current.push(new Particle(rocket.position, velocity, particleColor));
+    }
+  };
+
+  useFrame((state, delta) => {
+    if (!pointsRef.current || !texture) return;
+
+    const positions: number[] = [];
+    const colors: number[] = [];
+
+    if (phase === 'LAUNCH') {
+      rocket.update(delta);
+
+      // Check if reached target height (or slowed down enough)
+      if (rocket.velocity.y <= 2 || rocket.position.y >= rocket.targetHeight) {
+        explode();
         return;
       }
 
-      // Physics
-      particle.velocity.y -= config.gravity * delta;
-      particle.velocity.multiplyScalar(dragFactor);
+      // Render rocket head
+      positions.push(rocket.position.x, rocket.position.y, rocket.position.z);
+      colors.push(rocket.color.r, rocket.color.g, rocket.color.b);
 
-      particle.position.addScaledVector(particle.velocity, delta);
+      // Render trail
+      rocket.trail.forEach((pos, i) => {
+        const alpha = i / rocket.trail.length;
+        positions.push(pos.x, pos.y, pos.z);
+        colors.push(rocket.color.r * alpha, rocket.color.g * alpha, rocket.color.b * alpha);
+      });
 
-      // Render Update
-      dummy.position.copy(particle.position);
+    } else {
+      // Explode phase
+      let alive = false;
+      particles.current.forEach(p => {
+        p.update(delta, 5.0, 0.95); // gravity, drag
+        if (p.life < p.maxLife) {
+          alive = true;
+          positions.push(p.position.x, p.position.y, p.position.z);
 
-      let scale = lifeRatio * particle.scale;
-      // Fade out effect
+          // Colors with flicker
+          let alpha = p.alpha;
+          if (p.shouldFlicker) alpha *= (0.5 + Math.random() * 0.5);
 
-      dummy.scale.set(scale, scale, scale);
-      dummy.updateMatrix();
-      meshRef.current!.setMatrixAt(i, dummy.matrix);
+          colors.push(p.color.r * alpha, p.color.g * alpha, p.color.b * alpha);
+        }
+      });
 
-      // Color Update
-      tempColor.copy(particle.color);
-      // Fade intensity
-      tempColor.multiplyScalar(lifeRatio);
-      meshRef.current!.setColorAt(i, tempColor);
-    });
+      if (!alive) {
+        onComplete();
+        return;
+      }
+    }
 
-    meshRef.current.instanceMatrix.needsUpdate = true;
-    if (meshRef.current.instanceColor) meshRef.current.instanceColor.needsUpdate = true;
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+
+    // Mark as needing update
+    geometry.attributes.position.needsUpdate = true;
+    geometry.attributes.color.needsUpdate = true;
+    geometry.computeBoundingSphere(); // Important for culling
   });
 
+  if (!texture) return null;
+
   return (
-    <instancedMesh ref={meshRef} args={[undefined, undefined, config.count]} position={position}>
-      <sphereGeometry args={[0.05, 8, 8]} />
-      <meshBasicMaterial
-        blending={THREE.AdditiveBlending}
-        depthWrite={false}
-        transparent
-        vertexColors
-      />
-      <PositionalAudio ref={audioRef} />
-    </instancedMesh>
+    <group>
+      <points ref={pointsRef} geometry={geometry}>
+        <pointsMaterial
+          map={texture}
+          size={0.8}
+          sizeAttenuation={true}
+          vertexColors={true}
+          transparent={true}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+        />
+      </points>
+      <positionalAudio ref={launchAudioRef} args={[listener]} />
+      <positionalAudio ref={audioRef} args={[listener]} />
+    </group>
   );
 }
