@@ -4,6 +4,7 @@ import { Canvas, ThreeEvent } from "@react-three/fiber";
 import { OrbitControls, MeshReflectorMaterial } from "@react-three/drei";
 import { useState, useEffect } from "react";
 import Firework from "./Firework";
+import AudioListener from "./AudioListener";
 import { useBroadcast, useEventListener } from "../liveblocks.config";
 
 export default function Scene() {
@@ -22,7 +23,9 @@ export default function Scene() {
     // Spawn firework slightly above the click point
     const position: [number, number, number] = [e.point.x, e.point.y + 5, e.point.z];
     const color = "#" + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0');
-    const fireworkType = "classic";
+
+    const types = ["peony", "willow", "crossette"];
+    const fireworkType = types[Math.floor(Math.random() * types.length)];
 
     const newFirework = {
       id: Date.now() + Math.random(), // Unique ID
@@ -69,6 +72,8 @@ export default function Scene() {
   return (
     <div className="h-screen w-full bg-black">
       <Canvas camera={{ position: [0, 5, 15], fov: 45 }}>
+        <AudioListener />
+
         {/* Deep black sky */}
         <color attach="background" args={["#050505"]} />
 
