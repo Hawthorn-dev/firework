@@ -6,6 +6,8 @@ import * as THREE from "three";
 
 interface FireworkProps {
   position: [number, number, number];
+  color: string;
+  type: string;
   onComplete: () => void;
 }
 
@@ -15,7 +17,7 @@ interface Particle {
   color: THREE.Color;
 }
 
-export default function Firework({ position, onComplete }: FireworkProps) {
+export default function Firework({ position, color, type, onComplete }: FireworkProps) {
   const meshRef = useRef<THREE.InstancedMesh>(null);
   const count = 1000;
 
@@ -28,9 +30,8 @@ export default function Firework({ position, onComplete }: FireworkProps) {
   // Initialize particles on mount
   useEffect(() => {
     const data: Particle[] = [];
-    // Random base color for the firework
-    const baseHue = Math.random();
-    const baseColor = new THREE.Color().setHSL(baseHue, 1, 0.6);
+    // Use passed color or fallback to random
+    const baseColor = new THREE.Color(color);
 
     for (let i = 0; i < count; i++) {
       // Random direction in a sphere
@@ -50,7 +51,7 @@ export default function Firework({ position, onComplete }: FireworkProps) {
       });
     }
     particlesRef.current = data;
-  }, []);
+  }, [color, type]);
 
   // Helpers for optimization
   const dummy = useMemo(() => new THREE.Object3D(), []);
