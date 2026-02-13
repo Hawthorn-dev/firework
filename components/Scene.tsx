@@ -1,9 +1,39 @@
 "use client";
 
-import { Canvas } from "@react-three/fiber";
+import { Canvas, ThreeEvent } from "@react-three/fiber";
 import { OrbitControls, MeshReflectorMaterial } from "@react-three/drei";
+import { useState, useEffect } from "react";
+import Firework from "./Firework";
 
 export default function Scene() {
+  const [fireworks, setFireworks] = useState<{ id: number; position: [number, number, number] }[]>([]);
+
+  const handleFireworkComplete = (id: number) => {
+    setFireworks((prev) => prev.filter((fw) => fw.id !== id));
+  };
+
+  const handleReflectorClick = (e: ThreeEvent<MouseEvent>) => {
+    // Prevent event bubbling if needed, though here it's fine
+    e.stopPropagation();
+
+    // e.point is the intersection point
+    // Spawn firework slightly above the click point
+    const position: [number, number, number] = [e.point.x, e.point.y + 5, e.point.z];
+    const newFirework = {
+      id: Date.now() + Math.random(), // Unique ID
+      position,
+    };
+    setFireworks((prev) => [...prev, newFirework]);
+  };
+
+  // Auto-spawn one for demonstration on load
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setFireworks((prev) => [...prev, { id: 1, position: [0, 3, 0] }]);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, []);
+
   return (
     <div className="h-screen w-full bg-black">
       <Canvas camera={{ position: [0, 5, 15], fov: 45 }}>
@@ -16,8 +46,21 @@ export default function Scene() {
         {/* User controls */}
         <OrbitControls />
 
+        {/* Fireworks */}
+        {fireworks.map((fw) => (
+            <Firework
+                key={fw.id}
+                position={fw.position}
+                onComplete={() => handleFireworkComplete(fw.id)}
+            />
+        ))}
+
         {/* Reflective Ground/Water */}
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -2, 0]}>
+        <mesh
+            rotation={[-Math.PI / 2, 0, 0]}
+            position={[0, -2, 0]}
+            onClick={handleReflectorClick}
+        >
           <planeGeometry args={[50, 50]} />
           <MeshReflectorMaterial
             blur={[300, 100]}
